@@ -59,7 +59,6 @@ def generate_reply_streaming(user_input, history, max_new_tokens=1024, temperatu
 
     input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
 
-    # 4. 【关键改动】逐 token 生成并在循环中 yield
     output_ids = []
     for _ in range(max_new_tokens):
         logits, _ = model(input_ids)
@@ -76,9 +75,6 @@ def generate_reply_streaming(user_input, history, max_new_tokens=1024, temperatu
             break
 
         output_ids.append(next_id.item())
-        
-
-        # 【关键改动】解码后移除 token 之间的空格
         assistant_reply_so_far = tokenizer.decode(output_ids).replace(' ', '')
 
 
@@ -100,11 +96,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Etude") as demo:
     msg = gr.Textbox(label="你的输入", placeholder="在这里输入...", show_label=False)
     
     clear = gr.ClearButton([msg, chatbot], value="清空对话")
-
-    # 将提交动作绑定到新的流式生成函数
     msg.submit(generate_reply_streaming, [msg, chatbot], [msg, chatbot])
 
-# 启动界面
 if __name__ == "__main__":
     print("正在启动 Gradio 界面...")
     demo.launch(share=True, inbrowser=True)
