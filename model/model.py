@@ -16,7 +16,7 @@ class EtudeConfig:
     n_embd: int = 768
     head_size: int = n_embd // n_head
     dropout: float = 0.1
-    vocab_size: int = 20000 
+    vocab_size: int = 16384 
     eos_token_id: int = 0   
     use_moe: bool = False
     expert_number: int = 8

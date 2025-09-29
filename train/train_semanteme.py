@@ -6,9 +6,7 @@ import json
 from tokenizers import Tokenizer 
 import os
 import time
-
 import __init__  
-
 from model.model import Etude, EtudeConfig
 
 class TrainingConfig:
