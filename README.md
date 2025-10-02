@@ -132,7 +132,8 @@ python train_sft.py
 
 ### 数据准备
 训练数据应放置在以下目录：
-小改：
+
+示例：
 
 - 预训练数据：`training_data/pretrain/pretrain_hq.jsonl`
 - SFT数据：`training_data/sft/sft_mini_512.jsonl`
@@ -140,7 +141,6 @@ python train_sft.py
 ### 模型保存
 
 训练完成后，模型将保存在：
-示例：
 - 预训练模型：`weight/etude_pretrained_model/`
 - SFT模型：`weight/etude_sft_model/`
 - 分词器：`weight/tokenizer/`
