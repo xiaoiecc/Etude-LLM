@@ -16,7 +16,7 @@ import __init__
 from config import TokenizerConfig
 from data_utils import universal_text_iterator
 
-# ChatML模板保持不变
+
 ADVANCED_CHATML_TEMPLATE = (
     "{% if messages[0]['role'] == 'system' %}"
         "{% set loop_messages = messages[1:] %}"
@@ -61,8 +61,6 @@ def verify_config(cfg: TokenizerConfig) -> bool:
         print("\n[错误] 未找到任何训练数据文件！请检查 config.py 中的 FILES_PATTERNS。")
         return False
         
-    print("---------------------------------")
-    print("配置预检通过！")
     return True
 
 def train_the_one_tokenizer(cfg: TokenizerConfig):
@@ -117,7 +115,7 @@ def train_the_one_tokenizer(cfg: TokenizerConfig):
 
     print(f"所有Tokenizer配置文件已保存至: {cfg.TOKENIZER_DIR}")
 
-    # 步骤 5: 清理缓存
+
     os.remove(cfg.CACHE_FILE)
     print("已删除缓存文件。")
     print("\nTokenizer训练和配置全部完成！")

@@ -12,8 +12,6 @@ from model.model import Etude, EtudeHFConfig
 from config import SFTConfig, DataConfig, TokenizerConfig
 from data_utils import StreamingDataset
 
-
-
 def sft_train() -> None:
     sft_cfg = SFTConfig()
     d_cfg = DataConfig()

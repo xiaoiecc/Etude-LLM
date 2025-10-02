@@ -31,7 +31,7 @@ class EtudeHFConfig(PretrainedConfig):
         self.n_embd = n_embd
         self.dropout = dropout
 
-        # 派生属性
+
         self.head_size = self.n_embd // self.n_head
 
 
