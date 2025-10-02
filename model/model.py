@@ -17,9 +17,6 @@ class EtudeHFConfig(PretrainedConfig):
         n_head: int = 4,
         n_embd: int = 768,
         dropout: float = 0.1,
-        use_moe: bool = False,
-        expert_number: int = 8,
-        top_k: int = 4,
 
         tie_word_embeddings: bool = True,
         eos_token_id: int = 0,
@@ -33,9 +30,6 @@ class EtudeHFConfig(PretrainedConfig):
         self.n_head = n_head
         self.n_embd = n_embd
         self.dropout = dropout
-        self.use_moe = use_moe
-        self.expert_number = expert_number
-        self.top_k = top_k
 
         # 派生属性
         self.head_size = self.n_embd // self.n_head

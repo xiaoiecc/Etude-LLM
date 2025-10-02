@@ -4,12 +4,6 @@ from dataclasses import dataclass, field
 from typing import List
 
 @dataclass
-class MOEConfig:
-    hidden_dim: int
-    expert_number: int
-    top_k: int
-
-@dataclass
 class TokenizerConfig:
     FILES_PATTERNS: List[str] = field(default_factory=lambda: [
         "training_data/pretrain/pretrain_hq.jsonl",
