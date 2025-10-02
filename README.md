@@ -15,7 +15,6 @@ Etude LLM是一个轻量级的语言模型实现项目，旨在提供一个可�
 Etude LLM/
 ├── inference/              # 模型推理代码
 │   ├── __init__.py
-│   ├── app.py              # Gradio Web界面
 │   ├── inference.py        # 基础推理实现
 │   └── inference_laRA.py   # LoRA推理实现
 ├── model/                  # 模型定义
@@ -96,7 +95,6 @@ Etude LLM实现了以下核心组件：
 - 支持更多模型架构变体
 - 扩展到多模态任务
 - 优化推理速度
-- 加入webUI
 - 重构代码
 
 ## 总结
