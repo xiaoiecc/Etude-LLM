@@ -159,6 +159,9 @@ def verify_tokenizer(cfg: TokenizerConfig):
     except Exception as e:
         print(f"\n[错误] 验证失败: {e}")
 
+#其实我完全可以把验证删掉，因为我跑通了，但是我懒得删
+#而且万一哪天我改了配置文件又忘了改回来了呢
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Etude-LLM Tokenizer 训练和验证脚本")
     parser.add_argument(
