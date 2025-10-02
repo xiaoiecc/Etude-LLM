@@ -1,403 +1,376 @@
+# model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-from dataclasses import dataclass
+from typing import Optional, Tuple, List
+from transformers import PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
+
+class EtudeHFConfig(PretrainedConfig):
+    model_type = "etude"
+
+    def __init__(
+        self,
+
+        vocab_size: int = 16384,
+        n_layer: int = 6,
+        n_head: int = 4,
+        n_embd: int = 768,
+        dropout: float = 0.1,
+        use_moe: bool = False,
+        expert_number: int = 8,
+        top_k: int = 4,
+
+        tie_word_embeddings: bool = True,
+        eos_token_id: int = 0,
+        pad_token_id: int = 0,
+
+        **kwargs
+    ):
+
+        self.vocab_size = vocab_size
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.dropout = dropout
+        self.use_moe = use_moe
+        self.expert_number = expert_number
+        self.top_k = top_k
+
+        # 派生属性
+        self.head_size = self.n_embd // self.n_head
 
 
-torch.manual_seed(1024)
+        super().__init__(
+            tie_word_embeddings=tie_word_embeddings,
+            eos_token_id=eos_token_id,
+            pad_token_id=pad_token_id,
+            **kwargs
+        )
 
-@dataclass
-class EtudeConfig:
-    batch_size: int = 4
-    n_layer: int = 6
-    n_head: int = 4
-    n_embd: int = 768
-    head_size: int = n_embd // n_head
-    dropout: float = 0.1
-    vocab_size: int = 16384 
-    eos_token_id: int = 0   
-    use_moe: bool = False
-    expert_number: int = 8
-    top_k: int = 4
-    shared_experts_number: int = 4
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
+    def _norm(self, x: torch.Tensor) -> torch.Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output_dtype = x.dtype
+        return (self._norm(x.float()) * self.weight).to(output_dtype)
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, max_position_embeddings=10000, base=10000):
+    def __init__(self, dim: int, max_position_embeddings: int = 4096, base: int = 10000, device: Optional[torch.device] = None):
         super().__init__()
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, device=device, dtype=torch.float32) / self.dim))
         self.register_buffer("inv_freq", inv_freq)
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.float32)
 
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings, device=torch.device("cpu"), dtype=torch.float32
-        )
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
+    def _set_cos_sin_cache(self, seq_len: int, device: Optional[torch.device], dtype: torch.dtype) -> None:
         self.max_seq_len_cached = seq_len
-        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
-        freqs = torch.outer(t, self.inv_freq)
-
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos()[None, None, :, :].to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin()[None, None, :, :].to(dtype), persistent=False)
+        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    def forward(self, x, seq_len=None):
+    def forward(self, x: torch.Tensor, seq_len_offset: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+        # x shape: (B, H, T, D_h)
+        seq_len = x.shape[2]
+        if seq_len + seq_len_offset > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len + seq_len_offset, device=x.device, dtype=x.dtype)
+        
+        cos = self.cos_cached[seq_len_offset : seq_len + seq_len_offset]
+        sin = self.sin_cached[seq_len_offset : seq_len + seq_len_offset]
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
-        return (
-            self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
-            self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
-        )
-
-def rotate_half(x):
-    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
-def apply_rotary_pos_emb(q, k, cos, sin):
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    # cos, sin shape: (T, D_h)
+    cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, T, D_h)
+    sin = sin.unsqueeze(0).unsqueeze(0)  # (1, 1, T, D_h)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
-
 class MultiHeadAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: EtudeHFConfig):
         super().__init__()
         self.n_head = config.n_head
         self.head_size = config.head_size
-        self.hidden_size = config.n_embd
-        self.dropout = nn.Dropout(config.dropout)
+        self.n_embd = config.n_embd
+        self.qkv_proj = nn.Linear(self.n_embd, 3 * self.n_embd, bias=False)
+        self.out_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
+        self.rope = RotaryEmbedding(self.head_size, max_position_embeddings=4096)
+        self.dropout = config.dropout
 
-        self.qkv_proj = nn.Linear(config.n_embd, 3 * config.n_embd)
-        self.out_proj = nn.Linear(config.n_embd, config.n_embd)
-
-        self.rope = RotaryEmbedding(self.head_size)
-
-    def forward(self, x, attn_mask=None):
+    def forward(self, x: torch.Tensor, past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, use_cache: bool = False, attention_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, C = x.size()
-        qkv = self.qkv_proj(x)
-        qkv = qkv.view(B, T, 3, self.n_head, self.head_size)  
-        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]  
-
-        q = q.transpose(1, 2)  
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-    
-        cos, sin = self.rope(q, seq_len=T) 
         
-  
+        q, k, v = self.qkv_proj(x).split(self.n_embd, dim=2)
+        
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, H, T, D_h)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, H, T, D_h)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, H, T, D_h)
+
+        seq_len_offset = 0
+        if past_key_value is not None:
+            seq_len_offset = past_key_value[0].shape[2]
+        
+        cos, sin = self.rope(q, seq_len_offset=seq_len_offset)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        if attn_mask is not None:
-            attn_mask = attn_mask[:, None, None, :]
+        if past_key_value is not None:
+            past_k, past_v = past_key_value
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+
+        present_key_value = (k, v) if use_cache else None
+        
+
+        is_causal = attention_mask is None
 
         out = F.scaled_dot_product_attention(
             q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=True
+            attn_mask=attention_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal
         )
 
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        out = self.out_proj(out)
-        out = self.dropout(out)
-        return out
-
-
+        out = out.transpose(1, 2).contiguous().view(B, T, C) # (B, T, C)
+        return self.out_proj(out), present_key_value
 
 class SwiGLU(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout=0.0):
+    def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
-        self.w1 = nn.Linear(dim, hidden_dim)
-        self.w2 = nn.Linear(hidden_dim, dim)
-        self.w3 = nn.Linear(dim, hidden_dim)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
-
 class FeedForward(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: EtudeHFConfig):
         super().__init__()
+
+        hidden_dim = int(config.n_embd * 4 * (2 / 3))
+        multiple_of = 256
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
         self.net = SwiGLU(
             dim=config.n_embd,
-            hidden_dim=4 * config.n_embd,
+            hidden_dim=hidden_dim,
             dropout=config.dropout
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-
-class BasicExpert(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-
-        self.net = SwiGLU(
-            dim=dim,
-            hidden_dim=4 * dim 
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-class MOERouter(nn.Module):
-    def __init__(self, hidden_dim, expert_number, top_k, noisy_gate=True):
-        super().__init__()
-        self.gate = nn.Linear(hidden_dim, expert_number)
-        self.expert_number = expert_number
-        self.top_k = top_k
-        self.noisy_gate = noisy_gate
-
-    def forward(self, hidden_states):
-        router_logits = self.gate(hidden_states)
-
-        if self.noisy_gate:
-            noise = torch.randn_like(router_logits) * 1e-2
-            router_logits = router_logits + noise
-
-        routing_probs = F.softmax(router_logits, dim=-1)
-        router_weights, selected_experts = torch.topk(routing_probs, self.top_k, dim=-1)
-        router_weights = router_weights / router_weights.sum(dim=-1, keepdim=True)
-        return router_logits, router_weights, selected_experts
-
-class MOEConfig:
-    def __init__(self, hidden_dim, expert_number, top_k, shared_experts_number=2):
-        self.hidden_dim = hidden_dim
-        self.expert_number = expert_number
-        self.top_k = top_k
-        self.shared_experts_number = shared_experts_number
-
-class SparseMOE(nn.Module):
-    def __init__(self, config: MOEConfig):
-        super().__init__()
-        self.hidden_dim = config.hidden_dim
-        self.expert_number = config.expert_number
-        self.top_k = config.top_k
-
-        self.experts = nn.ModuleList([BasicExpert(self.hidden_dim) for _ in range(self.expert_number)])
-
-        self.router = MOERouter(self.hidden_dim, self.expert_number, self.top_k, noisy_gate=True)
-
-    def forward(self, x, mask=None):
-        B, T, H = x.size()
-        hidden_states = x.view(-1, H)  # [B*T, H]
-
-        if mask is not None:
-            mask_flat = mask.view(-1)
-
-            hidden_states_masked = hidden_states[mask_flat]
-        else:
-            hidden_states_masked = hidden_states
-            mask_flat = None
-
-        router_logits, router_weights, selected_experts = self.router(hidden_states_masked)
-
-        num_tokens, top_k = selected_experts.shape
-        
-        flat_top_k_indices = selected_experts.view(-1) 
-        flat_hidden_states = hidden_states_masked.repeat_interleave(top_k, dim=0) 
-        flat_router_weights = router_weights.view(-1, 1) 
-
-        expert_capacity = num_tokens * top_k // self.expert_number 
-        expert_bins = torch.bincount(flat_top_k_indices, minlength=self.expert_number)
-        expert_cumsum = torch.cumsum(expert_bins, dim=0)
-        
-        sorted_indices = torch.argsort(flat_top_k_indices)
-
-        permuted_hidden_states = flat_hidden_states[sorted_indices]
-        permuted_weights = flat_router_weights[sorted_indices]
-
-        split_hidden_states = torch.split(permuted_hidden_states, expert_bins.tolist(), dim=0)
-
-        results = []
-        for i, expert in enumerate(self.experts):
-            if split_hidden_states[i].shape[0] > 0: 
-                results.append(expert(split_hidden_states[i]))
-
-
-        permuted_output = torch.cat(results, dim=0)
-        
-
-        permuted_output = permuted_output * permuted_weights
-        
-
-        unpermuted_output = torch.zeros_like(permuted_output)
-        unpermuted_output[sorted_indices] = permuted_output
-        token_outputs = unpermuted_output.view(num_tokens, top_k, H).sum(dim=1)
-        final_hidden = torch.zeros_like(hidden_states)
-        if mask is not None:
-            final_hidden[mask_flat] = token_outputs
-        else:
-            final_hidden = token_outputs
-
-        final_hidden = final_hidden.view(B, T, H)
-        return final_hidden, router_logits, selected_experts
-    
 class Block(nn.Module):
-    def __init__(self, config: EtudeConfig):
+    def __init__(self, config: EtudeHFConfig):
         super().__init__()
         self.att = MultiHeadAttention(config)
-
         self.ln1 = RMSNorm(config.n_embd)
-        self.use_moe = config.use_moe
-        if self.use_moe:
-            moe_config = MOEConfig(
-                hidden_dim=config.n_embd,
-                expert_number=config.expert_number,
-                top_k=config.top_k
-            )
-            self.ffn = SparseMOE(moe_config)
-        else:
-
-            self.ffn = FeedForward(config)
-
+        self.ffn = FeedForward(config)
         self.ln2 = RMSNorm(config.n_embd)
 
-    def forward(self, x):
-        x_att = self.att(self.ln1(x))
-        x = x + x_att
-        if self.use_moe:
-            x_ffn, router_logits, selected_experts = self.ffn(self.ln2(x))
-            x = x + x_ffn
+    def forward(self, x: torch.Tensor, past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, use_cache: bool = False, attention_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        residual = x
+        x_norm = self.ln1(x)
+        x_att, present_kv = self.att(x_norm, past_key_value, use_cache, attention_mask)
+        x = residual + x_att
 
-            return x, router_logits, selected_experts
-        else:
-            x_ffn = self.ffn(self.ln2(x))
-            x = x + x_ffn
+        residual = x
+        x_norm = self.ln2(x)
+        x_ffn = self.ffn(x_norm)
+        x = residual + x_ffn
+        
+        return x, present_kv
 
-            return x, None, None
+class Etude(PreTrainedModel):
+    config_class = EtudeHFConfig
 
-
-class Etude(nn.Module):
-    def __init__(self, config: EtudeConfig):
-        super().__init__()
-        self.config = config
-        self.token_embedding = nn.Embedding(
-            config.vocab_size,
-            config.n_embd,
-            padding_idx=None
-        )
-        self.n_embd = config.n_embd
-
+    def __init__(self, config: EtudeHFConfig):
+        super().__init__(config)
+        self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
-
         self.ln_f = RMSNorm(config.n_embd)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
-        self.lm_head.weight = self.token_embedding.weight
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        
+        self.post_init()
+        
+    def generate(self, input_ids, max_new_tokens=20, do_sample=True, temperature=0.7, top_p=0.9, 
+                 eos_token_id=None, pad_token_id=None, **kwargs):
 
-        self.eos_token = config.eos_token_id 
+        batch_size = input_ids.shape[0]
+        device = input_ids.device
+        
 
+        if eos_token_id is None:
+            eos_token_id = self.config.eos_token_id
+        if pad_token_id is None:
+            pad_token_id = self.config.pad_token_id
+            
+        generated_tokens = input_ids.clone()
+        
 
-    def forward(self, idx, targets=None):
-        B, T = idx.shape
+        unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=device)
+        
 
-        mask = (idx != self.eos_token)
+        for _ in range(max_new_tokens):
 
-        x = self.token_embedding(idx) 
-        total_aux_loss = 0.0
-        aux_coef = 0.01
+            with torch.no_grad():
+                outputs = self.forward(
+                    input_ids=generated_tokens,
+                    use_cache=True,
+                    **kwargs
+                )
+                
+  
+            next_token_logits = outputs.logits[:, -1, :]
+            
+     
+            if temperature > 0:
+                next_token_logits = next_token_logits / temperature
+            
+            if do_sample and top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                
+     
+                sorted_indices_to_remove = cumulative_probs > top_p
+      
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+    
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                next_token_logits = next_token_logits.masked_fill(indices_to_remove, -float("Inf"))
+            
+            if do_sample:
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+            else:
+                next_tokens = torch.argmax(next_token_logits, dim=-1)
+            
+            next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
+            
+            generated_tokens = torch.cat([generated_tokens, next_tokens.unsqueeze(-1)], dim=-1)
+            unfinished_sequences = unfinished_sequences * (next_tokens != eos_token_id)
+            
+    
+            if unfinished_sequences.max() == 0:
+                break
+                
+        return generated_tokens
 
-        for block in self.blocks:
-            x, router_logits, selected_experts = block(x)
-            if router_logits is not None and selected_experts is not None:
+    def get_input_embeddings(self) -> nn.Module:
+        return self.token_embedding
 
-                router_logits_flat = router_logits.view(-1, router_logits.size(-1))
-                selected_experts_flat = selected_experts.view(-1, selected_experts.size(-1))
-                mask_flat = mask.view(-1)
-                router_logits_masked = router_logits_flat[mask_flat]
-                selected_experts_masked = selected_experts_flat[mask_flat]
-                if router_logits_masked.numel() > 0:
-                    aux_loss = self.compute_aux_loss(router_logits_masked, selected_experts_masked)
-                    total_aux_loss += aux_loss
+    def get_output_embeddings(self) -> nn.Module:
+        return self.lm_head
 
+    def set_input_embeddings(self, new_embeddings: nn.Module):
+        self.token_embedding = new_embeddings
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
+    ) -> torch.Tensor:
+        bsz, tgt_len = input_ids_shape
+        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+        mask_cond = torch.arange(mask.size(-1), device=device)
+        mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+        mask = mask.to(dtype)
+
+        if past_key_values_length > 0:
+            mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
+            
+        return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+
+    def _prepare_decoder_attention_mask(
+        self, attention_mask: Optional[torch.Tensor], input_shape: Tuple[int, int], inputs_embeds: torch.Tensor, past_key_values_length: int
+    ) -> Optional[torch.Tensor]:
+
+        dtype = inputs_embeds.dtype
+        device = inputs_embeds.device
+        causal_mask = self._make_causal_mask(
+            input_shape,
+            dtype,
+            device=device,
+            past_key_values_length=past_key_values_length,
+        )
+
+        if attention_mask is None:
+            return causal_mask
+
+        if attention_mask.dim() == 2:
+
+            expanded_mask = attention_mask[:, None, None, :].expand(
+                input_shape[0], 1, input_shape[1], input_shape[1] + past_key_values_length
+            ).to(dtype)
+            inverted_mask = 1.0 - expanded_mask
+            padding_mask = inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+            return padding_mask + causal_mask
+
+        return causal_mask
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor,
+        labels: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        use_cache: Optional[bool] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> CausalLMOutputWithPast:
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        x = self.token_embedding(input_ids)
+        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        attention_mask = self._prepare_decoder_attention_mask(
+            attention_mask, input_ids.shape, x, past_key_values_length
+        )
+        present_kvs = [] if use_cache else None
+
+        for i, block in enumerate(self.blocks):
+            past_kv = past_key_values[i] if past_key_values is not None else None
+            x, present_kv = block(x, past_kv, use_cache, attention_mask)
+            if use_cache and present_kv is not None:
+                present_kvs.append(present_kv)
+        
         x = self.ln_f(x)
         logits = self.lm_head(x)
+
         loss = None
+        if labels is not None:
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
-        if targets is not None:
+        if not return_dict:
+            output = (logits,) + (tuple(present_kvs) if present_kvs else None,)
+            return (loss,) + output if loss is not None else output
 
-            ce_loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
-                ignore_index=self.eos_token
-            )
-            loss = ce_loss + aux_coef * total_aux_loss
-
-        return logits, loss
-
-
-    def compute_aux_loss(self, router_logits, selected_experts):
-
-        num_experts = router_logits.size(-1)
-        router_probs = F.softmax(router_logits, dim=-1)  # [N, E]
-
-
-        expert_mask = F.one_hot(selected_experts, num_classes=num_experts)
-        expert_mask = expert_mask.sum(dim=1).float()  # [N, E]
-
-
-        load = router_probs.mean(dim=0)  # [E]
-        usage = expert_mask.mean(dim=0)  # [E]
-        aux_loss = (load * usage).sum() * num_experts
-
-        return aux_loss
-
-
-def connectivity_test_dynamic():
-    print("--- Testing with SwiGLU FFN (MoE disabled by default) ---")
-    config = EtudeConfig(use_moe=False) 
-    model = Etude(config)
-
-    train_seq_len = 16
-    idx_train = torch.randint(0, config.vocab_size, (config.batch_size, train_seq_len))
-    targets_train = torch.randint(0, config.vocab_size, (config.batch_size, train_seq_len))
-    logits_train, loss_train = model(idx_train, targets_train)
-    print("训练序列测试:")
-    print("  输入 shape:", idx_train.shape)
-    print("  logits shape:", logits_train.shape)
-    print("  loss:", loss_train.item())
-
-    infer_seq_len = 30
-    idx_infer = torch.randint(0, config.vocab_size, (config.batch_size, infer_seq_len))
-    logits_infer, _ = model(idx_infer)
-    print("推理序列测试:")
-    print("  输入 shape:", idx_infer.shape)
-    print("  logits shape:", logits_infer.shape)
-
-    print("\n--- Testing with SwiGLU Experts (MoE enabled) ---")
-    config_moe = EtudeConfig(use_moe=True) 
-    model_moe = Etude(config_moe)
-
-    logits_moe, loss_moe = model_moe(idx_train, targets_train)
-    print("MoE训练序列测试:")
-    print("  输入 shape:", idx_train.shape)
-    print("  logits shape:", logits_moe.shape)
-    print("  loss:", loss_moe.item())
-
-
-if __name__ == "__main__":
-    connectivity_test_dynamic()
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=tuple(present_kvs) if present_kvs else None,
+            hidden_states=None,
+            attentions=None,
+        )

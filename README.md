@@ -13,27 +13,32 @@ Etude LLM是一个轻量级的语言模型实现项目，旨在提供一个可�
 
 ```
 Etude LLM/
-├── inference/          # 模型推理代码
-│   ├── inference.py    # 基础推理实现
-├── model/              # 模型定义
-│   ├── model.py        # 基础模型架构 
-├── tool/               # 数据处理工具
-│   ├── cut_jsonl.py    # JSONL数据处理
-│   ├── cut_jsonl_sft.py # SFT数据格式处理
-│   ├── cut_txt.py      # 文本切分工具
-│   └── extract_xml.py  # XML数据提取工具
-├── train/              # 训练相关代码
-│   ├── full_sft_train.py # 全量SFT训练
-│   ├── tarin_semanteme.py# 语义训练
-|   └──train_tokenizer.py# 训练分词器
-├── training_data/      # 训练数据
-│   ├── big_json/       # 大型JSON格式数据
-│   ├── big_text/       # 大型文本数据
-│   ├── text/           # 文本数据
-│   └── xml/            # XML格式数据
-└── weight/             # 模型权重
-    ├── full_sft_weight/ # 全量SFT模型权重
-    └── semanteme_weight/ # 语义模型权钟重
+├── inference/              # 模型推理代码
+│   ├── __init__.py
+│   ├── app.py              # Gradio Web界面
+│   ├── inference.py        # 基础推理实现
+│   └── inference_laRA.py   # LoRA推理实现
+├── model/                  # 模型定义
+│   ├── __init__.py
+│   ├── model.py            # 基础模型架构
+│   └── model_loRA.py       # LoRA模型架构
+├── tool/                   # 数据处理工具
+│   ├── cut_json.py         # JSON数据处理
+│   ├── cut_jsonl.py        # JSONL数据处理
+│   ├── cut_jsonl_sft.py    # SFT数据格式处理
+│   ├── cut_txt.py          # 文本切分工具
+│   └── extract_xml.py      # XML数据提取工具
+├── train/                  # 训练相关代码
+│   ├── __init__.py
+│   ├── config.py           # 训练配置
+│   ├── data_utils.py       # 数据工具函数
+│   ├── train_pretrain.py   # 预训练实现
+│   ├── train_sft.py        # SFT训练实现
+│   └── train_tokenizer.py  # 训练分词器
+├── img/                    # 图片资源
+│   └── Etude.gif
+├── training_data/          # 训练数据（被.gitignore排除）
+└── weight/                 # 模型权重（被.gitignore排除）
 ```
 
 ## 核心功能
@@ -66,8 +71,9 @@ Etude LLM实现了以下核心组件：
 
 支持多种训练范式：
 
-- **全量微调(Full Fine-tuning)**：适用于有足够计算资源的场景
-- **语义训练**：针对语义理解的专门训练方法
+- **预训练(Pretraining)**：基础语言模型训练
+- **监督微调(SFT)**：指令微调训练
+- **分词器训练**：自定义分词器训练
 
 
 
