@@ -131,8 +131,9 @@ python train_sft.py
 - 训练轮数：3
 
 ### 数据准备
-
 训练数据应放置在以下目录：
+小改：
+
 - 预训练数据：`training_data/pretrain/pretrain_hq.jsonl`
 - SFT数据：`training_data/sft/sft_mini_512.jsonl`
 
