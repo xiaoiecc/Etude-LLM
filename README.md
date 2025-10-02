@@ -139,6 +139,7 @@ python train_sft.py
 ### 模型保存
 
 训练完成后，模型将保存在：
+示例：
 - 预训练模型：`weight/etude_pretrained_model/`
 - SFT模型：`weight/etude_sft_model/`
 - 分词器：`weight/tokenizer/`
