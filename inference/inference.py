@@ -1,7 +1,6 @@
 # inference.py
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import sys
 from typing import List, Dict
 
 

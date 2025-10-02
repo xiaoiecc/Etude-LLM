@@ -74,7 +74,81 @@ Etude LLM实现了以下核心组件：
 - **监督微调(SFT)**：指令微调训练
 - **分词器训练**：自定义分词器训练
 
+## 快速开始
 
+### 训练流程概述
+
+Etude LLM的训练流程分为三个主要步骤：
+
+1. **分词器训练** - 创建自定义分词器
+2. **预训练** - 基础语言模型训练
+3. **监督微调(SFT)** - 指令微调训练
+
+### 详细训练步骤
+
+#### 1. 分词器训练
+
+首先训练自定义分词器：
+
+```bash
+cd train
+python train_tokenizer.py all
+```
+
+这将：
+- 验证配置文件
+- 训练BPE分词器
+- 创建Hugging Face兼容的分词器配置
+- 验证分词器功能
+
+#### 2. 预训练
+
+进行基础语言模型预训练：
+
+```bash
+cd train
+python train_pretrain.py
+```
+
+配置参数（可在`config.py`中调整）：
+- 批量大小：16
+- 学习率：3e-4
+- 训练轮数：3
+- 设备：自动检测CUDA/CPU
+
+#### 3. 监督微调(SFT)
+
+在预训练模型基础上进行指令微调：
+
+```bash
+cd train
+python train_sft.py
+```
+
+配置参数：
+- 批量大小：8
+- 学习率：3e-5
+- 训练轮数：3
+
+### 数据准备
+
+训练数据应放置在以下目录：
+- 预训练数据：`training_data/pretrain/pretrain_hq.jsonl`
+- SFT数据：`training_data/sft/sft_mini_512.jsonl`
+
+### 模型保存
+
+训练完成后，模型将保存在：
+- 预训练模型：`weight/etude_pretrained_model/`
+- SFT模型：`weight/etude_sft_model/`
+- 分词器：`weight/tokenizer/`
+
+### 恢复训练
+
+所有训练脚本支持断点续训：
+- 自动检测检查点文件
+- 恢复优化器状态和训练进度
+- 支持从预训练模型继续SFT训练
 
 ## 技术特点
 
