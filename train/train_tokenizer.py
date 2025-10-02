@@ -1,4 +1,3 @@
-# train_tokenizer.py
 import os
 import json
 import argparse
@@ -169,7 +168,7 @@ if __name__ == "__main__":
         type=str,
         choices=["config", "train", "verify", "all"],
         default="all",
-        nargs="?", # '?' 使参数变为可选，并使用 default 值
+        nargs="?", 
         help=(
             "执行的操作: "
             "'config' - 仅验证配置文件并退出; "
