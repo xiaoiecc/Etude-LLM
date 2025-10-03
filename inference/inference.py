@@ -17,7 +17,7 @@ def run_inference():
     sft_cfg = SFTConfig()
     device = sft_cfg.device
 
-    print("加载SFT模型和分词器...")
+    print("加载模型和分词器...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(sft_cfg.sft_model_dir)
 
@@ -67,9 +67,9 @@ def generate_reply_with_cache(
     tokenizer: AutoTokenizer, 
     conversation_history: List[Dict[str, str]], 
     device: str,
-    max_new_tokens: int = 512, 
+    max_new_tokens: int = 1024, 
     temperature: float = 0.7, 
-    top_p: float = 0.9,
+    top_p: float = 20,
 ) -> str:
 
     prompt_ids = tokenizer.apply_chat_template(
